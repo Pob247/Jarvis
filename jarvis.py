@@ -12,6 +12,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from google import genai
+import json
 
 # --- CONFIGURATION ---
 GOOGLES_API_KEY = "AIzaSyCkccuKhbWBBkjmz-awY6VwJH1UB4tiGv8"
@@ -122,6 +123,73 @@ def send_email(service, user_id, recipient, subject, body_text):
         print(f" [ERROR] Failed to send email: {e}")
         return False
 
+def get_all_future_events(service):
+    now = datetime.datetime.now(datetime.timezone.utc)
+    events_result = service.events().list(
+        calendarId='primary', timeMin=now.isoformat().replace("+00:00", "Z"),
+        singleEvents=True, orderBy='startTime').execute()
+    events = events_result.get('items', [])
+    
+    future_events = {}
+    for event in events:
+        # Only track events created by Jarvis (or relevant ones) if possible, 
+        # but for now track all to be safe, or maybe filter by some criteria?
+        # The prompt implies "if an event is deleted", so we track everything.
+        # We need the attendee email to send cancellation.
+        
+        # Attempt to find a valid attendee email (not self)
+        attendee_email = None
+        if 'attendees' in event:
+            for attendee in event['attendees']:
+                if not attendee.get('self', False):
+                    attendee_email = attendee.get('email')
+                    break # Just take the first non-self attendee for now
+        
+        if attendee_email:
+            future_events[event['id']] = {
+                'summary': event.get('summary', 'Meeting'),
+                'start': event['start'].get('dateTime', event['start'].get('date')),
+                'attendee_email': attendee_email
+            }
+    return future_events
+
+def check_for_cancellations(calendar_service, gmail_service):
+    state_file = "calendar_state.json"
+    current_events = get_all_future_events(calendar_service)
+    
+    if not os.path.exists(state_file):
+        # First run, just save state
+        with open(state_file, 'w') as f:
+            json.dump(current_events, f)
+        return
+
+    try:
+        with open(state_file, 'r') as f:
+            previous_events = json.load(f)
+    except:
+        previous_events = {}
+
+    # Check for deletions
+    for event_id, event_data in previous_events.items():
+        if event_id not in current_events:
+            # Event was in previous state but not in current -> DELETED
+            # Check if it was in the past (we don't care about past events expiring)
+            try:
+                event_start = parser.parse(event_data['start'])
+                if event_start > datetime.datetime.now(datetime.timezone.utc):
+                    print(f" [CANCELLATION DETECTED] {event_data['summary']} with {event_data['attendee_email']}")
+                    
+                    # Send cancellation email
+                    subject = f"Cancellation: {event_data['summary']}"
+                    body = f"Hi,\n\nThe event '{event_data['summary']}' scheduled for {event_data['start']} has been cancelled.\n\nBest,\nJarvis"
+                    send_email(gmail_service, 'me', event_data['attendee_email'], subject, body)
+            except Exception as e:
+                print(f"Error checking cancellation for {event_id}: {e}")
+
+    # Update state
+    with open(state_file, 'w') as f:
+        json.dump(current_events, f)
+
 def recall_memories(queries):
     if not memory_collection: return "No memory available."
     results = memory_collection.query(query_texts=queries, n_results=2)
@@ -208,14 +276,21 @@ def ask_jarvis(email_text, sender, busy_slots):
     return client.models.generate_content(model="gemini-2.5-pro", contents=prompt).text.strip()
 
 def main():
-    print("--- JARVIS v10.2 (PARSING ROBUSTNESS) ---")
+    print("--- JARVIS v10.3 (CANCELLATION CLEANUP) ---")
     print("Press Ctrl+C to stop.\n")
     gmail_service, calendar_service = authenticate_services()
     processed_ids = set()
     
+    # Initial state load
+    check_for_cancellations(calendar_service, gmail_service)
+    
     while True:
         try:
-            print(f"[{time.strftime('%H:%M:%S')}] Scanning inbox...")
+            print(f"[{time.strftime('%H:%M:%S')}] Scanning inbox & calendar...")
+            
+            # Check for cancellations every loop
+            check_for_cancellations(calendar_service, gmail_service)
+            
             results = gmail_service.users().messages().list(userId='me', q='is:unread -in:sent', maxResults=3).execute()
             messages = results.get('messages', [])
 
