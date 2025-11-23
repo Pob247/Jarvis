@@ -15,7 +15,7 @@ from google import genai
 import json
 
 # --- CONFIGURATION ---
-GOOGLES_API_KEY = "AIzaSyCkccuKhbWBBkjmz-awY6VwJH1UB4tiGv8"
+GOOGLES_API_KEY = "AIzaSyC6J83-dF45qh0fpRgZxe-JDaXwKbAtDiE"
 
 SCOPES = [
     'https://www.googleapis.com/auth/gmail.modify',
@@ -196,69 +196,6 @@ def recall_memories(queries):
     combined_memories = []
     if results['documents']:
         for doc_list in results['documents']:
-            for doc in doc_list:
-                if doc and doc not in combined_memories: combined_memories.append(doc)
-    if not combined_memories: return "No specific memory found."
-    return "\n".join(combined_memories)
-
-def ask_jarvis(email_text, sender, busy_slots):
-    client = genai.Client(api_key=GOOGLES_API_KEY)
-    memories = recall_memories([sender, email_text, "My name is"])
-    
-    # --- MODEL 1: TIME EXTRACTION (Simple Request) ---
-    time_phrase_prompt = f"""
-    You are an expert time extractor.
-    
-    1. EXTRACT FULL TIME REQUEST: Find the complete date and time request (e.g., '3pm next Tuesday', 'dinner tonight').
-    
-    OUTPUT FORMAT (MUST BE EXACT):
-    TIME_REQUEST: [The complete date/time phrase]
-    
-    EMAIL: "{email_text}"
-    """
-    
-    raw_extraction = client.models.generate_content(model="gemini-2.5-pro", contents=time_phrase_prompt).text.strip()
-    
-    # --- PYTHON LOGIC: NATURAL LANGUAGE PARSING (Guardrails & Robust Search) ---
-    # Use re.DOTALL to search across multiple lines if the AI adds a newline
-    time_phrase_match = re.search(r'TIME_REQUEST:\s*(.*?)\s*$', raw_extraction, re.DOTALL)
-    
-    availability_status = "UNKNOWN"
-    conflict_reason = None
-    parsed_time_dt = None
-    duration_minutes = infer_duration(email_text)
-    
-    if time_phrase_match:
-        time_phrase = time_phrase_match.group(1).strip()
-        
-        try:
-            settings = {'TIMEZONE': 'UTC', 'RETURN_AS_TIMEZONE_AWARE': True, 'PREFER_DATES_FROM': 'future'}
-            
-            parsed_time_dt = dateparser.parse(
-                time_phrase,
-                settings=settings,
-                languages=['en']
-            )
-
-            if parsed_time_dt is None: 
-                availability_status = "Could not parse specific time."
-            else:
-                is_free, conflict = is_time_free(parsed_time_dt, busy_slots)
-                if is_free:
-                    availability_status = "AVAILABLE"
-                else:
-                    availability_status = "BUSY"
-                    conflict_reason = conflict
-            
-        except Exception as e:
-            print(f"   [ERROR] Date Parsing Failed: {e}")
-            availability_status = "Could not parse specific time."
-
-    # --- MODEL 2: DECISION MAKING ---
-    prompt = f"""
-    You are Jarvis.
-    
-    CONTEXT: Memory: {memories} | LOGIC RESULT: User is {availability_status} at requested time.
     CONFLICT REASON: {conflict_reason if conflict_reason else 'None'}
     TIME VERIFIED: {parsed_time_dt.isoformat() if parsed_time_dt else 'N/A'} (Duration: {duration_minutes}m)
     
@@ -303,24 +240,6 @@ def main():
                     
                     msg = gmail_service.users().messages().get(userId='me', id=message['id']).execute()
                     snippet = msg.get('snippet', '')
-                    headers = msg['payload']['headers']
-                    sender = next((h['value'] for h in headers if h['name'] == 'From'), "Unknown")
-                    sender_email = sender
-                    if "<" in sender: sender_email = sender.split("<")[1].replace(">", "")
-
-                    if sender_email in BOT_EMAILS:
-                        gmail_service.users().messages().modify(userId='me', id=message['id'], body={'removeLabelIds': ['UNREAD']}).execute()
-                        processed_ids.add(message['id'])
-                        continue
-
-                    print(f"\nNew Email from: {sender}")
-                    decision = ask_jarvis(snippet, sender, busy_slots)
-                    print(f"DEBUG: {decision[:60]}...") 
-                    
-                    if "DELETE" in decision and "SEND" in decision and "BOOK" not in decision:
-                        decision = "DELETE"
-
-                    elif decision.startswith("DELETE"):
                         print(" >> SPAM. Deleting...")
                         gmail_service.users().messages().trash(userId='me', id=message['id']).execute()
                         processed_ids.add(message['id'])
