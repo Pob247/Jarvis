@@ -4,3 +4,4 @@ credentials.json
 jarvis_memory/
 __pycache__/
 *.log
+Jarvis oAuth.txt

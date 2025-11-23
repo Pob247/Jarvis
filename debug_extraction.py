@@ -3,7 +3,7 @@ import re
 import os
 
 # Hardcoded key from jarvis.py for testing
-GOOGLES_API_KEY = "AIzaSyC6J83-dF45qh0fpRgZxe-JDaXwKbAtDiE"
+GOOGLES_API_KEY = os.getenv("GEMINI_API_KEY")
 
 def test_extraction(email_text):
     client = genai.Client(api_key=GOOGLES_API_KEY)
