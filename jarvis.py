@@ -1,4 +1,7 @@
-import os.path
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 import time
 import datetime
 import base64
@@ -15,7 +18,7 @@ from google import genai
 import json
 
 # --- CONFIGURATION ---
-GOOGLES_API_KEY = "AIzaSyC6J83-dF45qh0fpRgZxe-JDaXwKbAtDiE"
+GOOGLES_API_KEY = os.getenv("GEMINI_API_KEY")
 
 SCOPES = [
     'https://www.googleapis.com/auth/gmail.modify',
@@ -196,6 +199,47 @@ def recall_memories(queries):
     combined_memories = []
     if results['documents']:
         for doc_list in results['documents']:
+            combined_memories.extend(doc_list)
+    return "\n".join(combined_memories) if combined_memories else "No relevant memories found."
+
+def decide_action(email_text, busy_slots):
+    # 1. Check availability
+    # Simple logic: if any busy slot overlaps with "requested time" (which we need to extract), we decline.
+    # But for now, let's just let the LLM decide based on the busy slots list.
+    
+    # We need to extract the time first to be useful, but let's pass the busy slots to the LLM context.
+    # Actually, the prompt needs to be robust.
+    
+    # Let's try to extract time using dateparser first to give a hint to LLM
+    parsed_time_dt = dateparser.parse(email_text, settings={'PREFER_DATES_FROM': 'future'})
+    
+    is_free = True
+    conflict_reason = None
+    duration_minutes = infer_duration(email_text)
+    
+    if parsed_time_dt:
+        # Check if free
+        end_dt = parsed_time_dt + datetime.timedelta(minutes=duration_minutes)
+        # Simple overlap check
+        # We need to be careful about timezones. parsed_time_dt might be naive.
+        # Assume local time for now or UTC if explicit.
+        if parsed_time_dt.tzinfo is None:
+            parsed_time_dt = parsed_time_dt.replace(tzinfo=datetime.timezone.utc) # Assume UTC for simplicity or system local
+            
+        is_free, conflict_reason = is_time_free(parsed_time_dt, busy_slots)
+    
+    client = genai.Client(api_key=GOOGLES_API_KEY)
+    
+    prompt = f"""
+    You are Jarvis, an AI scheduling assistant.
+    
+    CURRENT TIME: {datetime.datetime.now(datetime.timezone.utc).isoformat()}
+    BUSY SLOTS: {busy_slots}
+    
+    INFERRED REQUEST:
+    TIME: {parsed_time_dt}
+    DURATION: {duration_minutes} minutes
+    IS_FREE: {is_free}
     CONFLICT REASON: {conflict_reason if conflict_reason else 'None'}
     TIME VERIFIED: {parsed_time_dt.isoformat() if parsed_time_dt else 'N/A'} (Duration: {duration_minutes}m)
     
@@ -240,6 +284,32 @@ def main():
                     
                     msg = gmail_service.users().messages().get(userId='me', id=message['id']).execute()
                     snippet = msg.get('snippet', '')
+                    
+                    # Get full body
+                    if 'parts' in msg['payload']:
+                        parts = msg['payload']['parts']
+                        data = parts[0]['body']['data']
+                    else:
+                        data = msg['payload']['body']['data']
+                    email_body = base64.urlsafe_b64decode(data).decode()
+                    
+                    sender = msg['payload']['headers'][0]['value']
+                    for header in msg['payload']['headers']:
+                        if header['name'] == 'From':
+                            sender = header['value']
+                            break
+                            
+                    print(f" >> New Email from {sender}: {snippet[:50]}...")
+                    
+                    # Check ignore list
+                    if any(bot in sender.lower() for bot in BOT_EMAILS):
+                        print(" >> Bot detected. Ignoring.")
+                        processed_ids.add(message['id'])
+                        continue
+
+                    decision = decide_action(email_body, busy_slots)
+                    
+                    if "DELETE" in decision:
                         print(" >> SPAM. Deleting...")
                         gmail_service.users().messages().trash(userId='me', id=message['id']).execute()
                         processed_ids.add(message['id'])

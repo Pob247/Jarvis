@@ -1,6 +1,8 @@
-token.json
+# --- API KEYS AND TOKENS ---
+*.env
 credentials.json
-__pycache__/
-*.pyc
+token.json
+
+# --- DATABASE & BUILD FILES ---
 jarvis_memory/
-calendar_state.json
+__pycache__/
