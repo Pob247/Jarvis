@@ -1,8 +1,6 @@
-# --- API KEYS AND TOKENS ---
-*.env
-credentials.json
+.env
 token.json
-
-# --- DATABASE & BUILD FILES ---
+credentials.json
 jarvis_memory/
 __pycache__/
+*.log
